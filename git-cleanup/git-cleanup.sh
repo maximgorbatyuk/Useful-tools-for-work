@@ -6,7 +6,7 @@
 set -e
 
 # Protected branches that should never be deleted
-PROTECTED_BRANCHES=("development" "sandbox" "production" "main" "master")
+PROTECTED_BRANCHES=("development" "dev" "sandbox" "production" "main" "master")
 
 # Remote name (usually 'origin')
 REMOTE="origin"
