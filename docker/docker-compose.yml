@@ -1,0 +1,18 @@
+networks:
+  database-network:
+    driver: bridge
+
+
+services:
+  database:
+    image: postgres:latest
+    container_name: app-db
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: app
+    ports:
+      - 5432:5432
+    networks:
+      - database-network
