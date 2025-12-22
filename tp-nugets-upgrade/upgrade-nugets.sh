@@ -36,8 +36,109 @@ if ! command -v dotnet &>/dev/null; then
     exit 1
 fi
 
-# Step 0: Ask for dry run or proceed
-echo -e "${CYAN}Step 0: Select mode${NC}"
+# Step 1: Find all subfolders with .csproj files
+echo -e "${CYAN}Step 1: Scanning for .NET projects...${NC}"
+echo ""
+
+# Find all directories containing .csproj files
+project_subfolders=()
+while IFS= read -r csproj; do
+    # Get the first-level subfolder relative to ROOT_DIR
+    rel_path="${csproj#$ROOT_DIR/}"
+    first_folder=$(echo "$rel_path" | cut -d'/' -f1)
+    
+    # Check if it's a subfolder (not a file in root)
+    if [[ "$first_folder" != *.csproj ]]; then
+        # Add to array if not already present
+        if [[ ! " ${project_subfolders[*]} " =~ " ${first_folder} " ]]; then
+            project_subfolders+=("$first_folder")
+        fi
+    fi
+done < <(find "$ROOT_DIR" -name "*.csproj" -type f 2>/dev/null | sort)
+
+# Also check for .csproj files in root directory
+root_csproj_count=$(find "$ROOT_DIR" -maxdepth 1 -name "*.csproj" -type f 2>/dev/null | wc -l | tr -d ' ')
+
+if [ ${#project_subfolders[@]} -eq 0 ] && [ "$root_csproj_count" -eq 0 ]; then
+    echo -e "${RED}Error: No .NET projects found${NC}"
+    exit 1
+fi
+
+echo -e "${GREEN}Found ${#project_subfolders[@]} subfolder(s) with .NET projects${NC}"
+if [ "$root_csproj_count" -gt 0 ]; then
+    echo -e "${GREEN}Found $root_csproj_count .csproj file(s) in root directory${NC}"
+fi
+echo ""
+
+# Step 2: Ask user which subfolder to process
+echo -e "${CYAN}Step 2: Select folder to process${NC}"
+echo ""
+
+# Build selection menu
+echo -e "  ${YELLOW}0)${NC} All folders"
+
+index=1
+for folder in "${project_subfolders[@]}"; do
+    # Count .csproj files in this folder
+    csproj_count=$(find "$ROOT_DIR/$folder" -name "*.csproj" -type f 2>/dev/null | wc -l | tr -d ' ')
+    echo -e "  ${YELLOW}$index)${NC} $folder ($csproj_count .csproj files)"
+    ((index++))
+done
+
+if [ "$root_csproj_count" -gt 0 ]; then
+    echo -e "  ${YELLOW}$index)${NC} . (root directory - $root_csproj_count .csproj files)"
+    include_root_option=$index
+    ((index++))
+else
+    include_root_option=-1
+fi
+
+echo ""
+
+max_option=$((index - 1))
+
+while true; do
+    read -p "Select folder (0-$max_option): " folder_choice
+    
+    # Validate input is a number
+    if ! [[ "$folder_choice" =~ ^[0-9]+$ ]]; then
+        echo -e "${RED}Invalid input. Please enter a number.${NC}"
+        continue
+    fi
+    
+    if [ "$folder_choice" -lt 0 ] || [ "$folder_choice" -gt "$max_option" ]; then
+        echo -e "${RED}Invalid choice. Please select 0-$max_option${NC}"
+        continue
+    fi
+    
+    break
+done
+
+# Determine which folders to process
+selected_folders=()
+
+if [ "$folder_choice" -eq 0 ]; then
+    # All folders
+    selected_folders=("${project_subfolders[@]}")
+    if [ "$root_csproj_count" -gt 0 ]; then
+        selected_folders+=(".")
+    fi
+    echo -e "${GREEN}Selected: All folders${NC}"
+elif [ "$folder_choice" -eq "$include_root_option" ]; then
+    # Root directory
+    selected_folders=(".")
+    echo -e "${GREEN}Selected: Root directory${NC}"
+else
+    # Specific subfolder
+    selected_folder="${project_subfolders[$((folder_choice - 1))]}"
+    selected_folders=("$selected_folder")
+    echo -e "${GREEN}Selected: $selected_folder${NC}"
+fi
+
+echo ""
+
+# Step 3: Ask for dry run or proceed
+echo -e "${CYAN}Step 3: Select mode${NC}"
 echo ""
 echo -e "  ${YELLOW}1)${NC} Dry run - scan and show packages only"
 echo -e "  ${YELLOW}2)${NC} Proceed - scan, upgrade, build, test, commit and push"
@@ -64,45 +165,8 @@ while true; do
 done
 echo ""
 
-# Find all project directories (directories containing .csproj files)
-echo -e "${CYAN}Step 1: Scanning for .NET projects...${NC}"
-echo ""
-
-project_dirs=()
-while IFS= read -r csproj; do
-    dir=$(dirname "$csproj")
-    # Get relative path from root
-    rel_dir="${dir#$ROOT_DIR/}"
-    project_dirs+=("$dir")
-done < <(find "$ROOT_DIR" -name "*.csproj" -type f 2>/dev/null | sort -u)
-
-# Get unique parent directories (solution/project roots)
-solution_dirs=()
-while IFS= read -r dir; do
-    # Check if directory contains .sln or .csproj at root level
-    if ls "$dir"/*.sln 1>/dev/null 2>&1 || ls "$dir"/*.csproj 1>/dev/null 2>&1; then
-        solution_dirs+=("$dir")
-    fi
-done < <(find "$ROOT_DIR" -maxdepth 2 -type d 2>/dev/null | sort -u)
-
-# If no solution dirs found, use directories containing csproj
-if [ ${#solution_dirs[@]} -eq 0 ]; then
-    # Get unique parent directories of csproj files
-    while IFS= read -r dir; do
-        solution_dirs+=("$dir")
-    done < <(for d in "${project_dirs[@]}"; do dirname "$d"; done | sort -u)
-fi
-
-# Fallback to root if still empty
-if [ ${#solution_dirs[@]} -eq 0 ]; then
-    solution_dirs=("$ROOT_DIR")
-fi
-
-echo -e "${GREEN}Found ${#project_dirs[@]} .csproj file(s)${NC}"
-echo ""
-
-# Step 2: Scan all projects for TP.Tools.* packages
-echo -e "${CYAN}Step 2: Scanning for ${NUGET_PREFIX}.* packages...${NC}"
+# Step 4: Scan selected folders for TP.Tools.* packages
+echo -e "${CYAN}Step 4: Scanning for ${NUGET_PREFIX}.* packages...${NC}"
 echo ""
 
 # Temporary files for storing results
@@ -110,24 +174,35 @@ packages_tmp=$(mktemp)
 projects_with_packages_tmp=$(mktemp)
 trap "rm -f $packages_tmp $projects_with_packages_tmp" EXIT
 
-# Structure: project_dir|csproj_file|package_name|version
-for csproj in $(find "$ROOT_DIR" -name "*.csproj" -type f 2>/dev/null); do
-    project_dir=$(dirname "$csproj")
-    rel_path="${csproj#$ROOT_DIR/}"
+# Build search paths based on selected folders
+for folder in "${selected_folders[@]}"; do
+    if [ "$folder" == "." ]; then
+        search_path="$ROOT_DIR"
+        # Only search in root, not subdirectories
+        find_depth="-maxdepth 1"
+    else
+        search_path="$ROOT_DIR/$folder"
+        find_depth=""
+    fi
     
-    while IFS= read -r line; do
-        if [[ $line =~ Include=\"(${NUGET_PREFIX}\.[^\"]+)\" ]]; then
-            package_name="${BASH_REMATCH[1]}"
-            
-            version="unknown"
-            if [[ $line =~ Version=\"([^\"]+)\" ]]; then
-                version="${BASH_REMATCH[1]}"
+    for csproj in $(find "$search_path" $find_depth -name "*.csproj" -type f 2>/dev/null); do
+        project_dir=$(dirname "$csproj")
+        rel_path="${csproj#$ROOT_DIR/}"
+        
+        while IFS= read -r line; do
+            if [[ $line =~ Include=\"(${NUGET_PREFIX}\.[^\"]+)\" ]]; then
+                package_name="${BASH_REMATCH[1]}"
+                
+                version="unknown"
+                if [[ $line =~ Version=\"([^\"]+)\" ]]; then
+                    version="${BASH_REMATCH[1]}"
+                fi
+                
+                echo "$project_dir|$rel_path|$package_name|$version" >> "$packages_tmp"
+                echo "$project_dir" >> "$projects_with_packages_tmp"
             fi
-            
-            echo "$project_dir|$rel_path|$package_name|$version" >> "$packages_tmp"
-            echo "$project_dir" >> "$projects_with_packages_tmp"
-        fi
-    done < <(grep -E "PackageReference.*${NUGET_PREFIX}\." "$csproj" 2>/dev/null || true)
+        done < <(grep -E "PackageReference.*${NUGET_PREFIX}\." "$csproj" 2>/dev/null || true)
+    done
 done
 
 # Get unique projects with packages
@@ -143,7 +218,7 @@ while IFS= read -r pkg; do
 done < <(cut -d'|' -f3 "$packages_tmp" | sort -u 2>/dev/null || true)
 
 if [ ${#unique_packages[@]} -eq 0 ]; then
-    echo -e "${RED}No ${NUGET_PREFIX}.* packages found in any project${NC}"
+    echo -e "${RED}No ${NUGET_PREFIX}.* packages found in selected folder(s)${NC}"
     exit 1
 fi
 
@@ -182,6 +257,7 @@ if $DRY_RUN; then
     echo -e "${GREEN}   Dry run completed${NC}"
     echo -e "${CYAN}========================================${NC}"
     echo ""
+    echo -e "Selected folder(s): ${YELLOW}${selected_folders[*]}${NC}"
     echo -e "Total unique packages: ${YELLOW}${#unique_packages[@]}${NC}"
     echo -e "Total projects to upgrade: ${YELLOW}${#projects_to_upgrade[@]}${NC}"
     echo ""
@@ -191,8 +267,8 @@ fi
 
 # ===== PROCEED MODE STARTS HERE =====
 
-# Step 3: Ask for upgrade version
-echo -e "${CYAN}Step 3: Enter target version${NC}"
+# Step 5: Ask for upgrade version
+echo -e "${CYAN}Step 5: Enter target version${NC}"
 echo ""
 
 version_pattern='^1\.0\.[0-9]+$'
@@ -209,8 +285,8 @@ while true; do
 done
 echo ""
 
-# Step 4: Check git status for each project
-echo -e "${CYAN}Step 4: Checking git repositories...${NC}"
+# Step 6: Check git status for each project
+echo -e "${CYAN}Step 6: Checking git repositories...${NC}"
 echo ""
 
 # Track git repos we've processed
@@ -281,8 +357,8 @@ done
 
 cd "$ROOT_DIR"
 
-# Step 5: Upgrade packages in each project
-echo -e "${CYAN}Step 5: Upgrading packages to version $target_version...${NC}"
+# Step 7: Upgrade packages in each project
+echo -e "${CYAN}Step 7: Upgrading packages to version $target_version...${NC}"
 echo ""
 
 upgrade_failed=false
@@ -319,8 +395,8 @@ fi
 echo -e "${GREEN}All packages upgraded successfully!${NC}"
 echo ""
 
-# Step 6: Build each project
-echo -e "${CYAN}Step 6: Building projects...${NC}"
+# Step 8: Build each project
+echo -e "${CYAN}Step 8: Building projects...${NC}"
 echo ""
 
 build_failed=false
@@ -361,8 +437,8 @@ fi
 echo -e "${GREEN}All projects built successfully!${NC}"
 echo ""
 
-# Step 7: Test each project
-echo -e "${CYAN}Step 7: Running tests...${NC}"
+# Step 9: Test each project
+echo -e "${CYAN}Step 9: Running tests...${NC}"
 echo ""
 
 test_failed=false
@@ -408,8 +484,8 @@ fi
 echo -e "${GREEN}All tests passed!${NC}"
 echo ""
 
-# Step 8: Commit and push changes
-echo -e "${CYAN}Step 8: Committing and pushing changes...${NC}"
+# Step 10: Commit and push changes
+echo -e "${CYAN}Step 10: Committing and pushing changes...${NC}"
 echo ""
 
 # Process each git repo
@@ -451,6 +527,7 @@ echo -e "${CYAN}========================================${NC}"
 echo -e "${GREEN}   Upgrade completed successfully!${NC}"
 echo -e "${CYAN}========================================${NC}"
 echo ""
+echo -e "Selected folder(s): ${YELLOW}${selected_folders[*]}${NC}"
 echo -e "Target version: ${YELLOW}$target_version${NC}"
 echo -e "Packages upgraded: ${YELLOW}${#unique_packages[@]}${NC}"
 echo -e "Projects upgraded: ${YELLOW}${#projects_to_upgrade[@]}${NC}"
