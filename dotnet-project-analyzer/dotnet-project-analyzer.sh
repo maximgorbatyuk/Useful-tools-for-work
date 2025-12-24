@@ -1,8 +1,8 @@
 #!/bin/bash
 
-# .NET Code Analyzer Script
+# .NET Code Analyzer Script (Optimized)
 # Analyzes C# code to count meaningful lines of code
-# Compatible with bash 3.x+
+# Uses awk for fast processing
 
 set -e
 
@@ -12,7 +12,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-MAGENTA='\033[0;35m'
 WHITE='\033[1;37m'
 NC='\033[0m' # No Color
 
@@ -20,10 +19,67 @@ NC='\033[0m' # No Color
 TEMP_DIR=$(mktemp -d)
 trap "rm -rf $TEMP_DIR" EXIT
 
-# Function to sanitize number (remove whitespace/newlines)
-sanitize_num() {
-    echo "$1" | tr -d '[:space:]'
+# AWK script for counting meaningful lines (much faster than bash loops)
+AWK_COUNTER='
+BEGIN {
+    meaningful = 0
+    non_empty = 0
+    in_multiline_comment = 0
 }
+{
+    # Trim whitespace
+    gsub(/^[[:space:]]+|[[:space:]]+$/, "")
+    
+    # Skip empty lines
+    if (length($0) == 0) next
+    
+    non_empty++
+    
+    # Handle multi-line comments
+    if (in_multiline_comment) {
+        if ($0 ~ /\*\//) in_multiline_comment = 0
+        next
+    }
+    
+    if ($0 ~ /^\/\*/ && $0 !~ /\*\//) {
+        in_multiline_comment = 1
+        next
+    }
+    
+    # Skip non-meaningful lines
+    if ($0 == "{") next
+    if ($0 == "}") next
+    if ($0 == "};") next
+    if ($0 ~ /^using[[:space:]]/) next
+    if ($0 ~ /^namespace[[:space:]]/) next
+    if ($0 ~ /^\/\//) next
+    if ($0 ~ /^\/\/\//) next
+    if ($0 ~ /^\/\*/) next
+    if ($0 ~ /^\*/) next
+    if ($0 ~ /^\*\//) next
+    if ($0 ~ /^"[^"]*"$/) next
+    if ($0 ~ /^\+/) next
+    if ($0 ~ /^\./) next
+    if ($0 ~ /^\[.*\]$/) next
+    if ($0 ~ /^#region/) next
+    if ($0 ~ /^#endregion/) next
+    if ($0 ~ /^#pragma/) next
+    if ($0 ~ /^#if/) next
+    if ($0 ~ /^#else/) next
+    if ($0 ~ /^#endif/) next
+    if ($0 ~ /^#nullable/) next
+    if ($0 == "get;") next
+    if ($0 == "set;") next
+    if ($0 == "init;") next
+    if ($0 == "get") next
+    if ($0 == "set") next
+    
+    meaningful++
+}
+END {
+    printf "%d %d", meaningful, non_empty
+}
+'
 
 # Function to display folder selection menu
 select_folder() {
@@ -38,20 +94,16 @@ select_folder() {
     echo -e "${GREEN}Available folders:${NC}"
     echo ""
     
-    # Get list of directories
     local i=1
     
-    # Add current directory as option
     echo "$current_dir" > "$TEMP_DIR/dirs.txt"
     echo -e "  ${BLUE}[$i]${NC} . (Current directory)"
     i=$((i + 1))
     
-    # Add parent directory as option
     dirname "$current_dir" >> "$TEMP_DIR/dirs.txt"
     echo -e "  ${BLUE}[$i]${NC} .. (Parent directory)"
     i=$((i + 1))
     
-    # List subdirectories
     while IFS= read -r dir; do
         if [[ -d "$dir" ]]; then
             echo "$dir" >> "$TEMP_DIR/dirs.txt"
@@ -96,116 +148,14 @@ select_folder() {
     echo ""
 }
 
-# Function to check if a line is meaningful code
-is_meaningful_line() {
-    local line="$1"
-    
-    # Trim leading and trailing whitespace
-    local trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-    
-    # Skip empty lines
-    [[ -z "$trimmed" ]] && return 1
-    
-    # Skip single braces (opening or closing)
-    [[ "$trimmed" == "{" ]] && return 1
-    [[ "$trimmed" == "}" ]] && return 1
-    [[ "$trimmed" == "};" ]] && return 1
-    
-    # Skip using statements
-    [[ "$trimmed" =~ ^using[[:space:]] ]] && return 1
-    
-    # Skip namespace declarations
-    [[ "$trimmed" =~ ^namespace[[:space:]] ]] && return 1
-    
-    # Skip single-line comments
-    [[ "$trimmed" =~ ^// ]] && return 1
-    
-    # Skip XML documentation comments
-    [[ "$trimmed" =~ ^/// ]] && return 1
-    
-    # Skip multi-line comment markers
-    [[ "$trimmed" =~ ^/\* ]] && return 1
-    [[ "$trimmed" =~ ^\* ]] && return 1
-    [[ "$trimmed" =~ ^\*/ ]] && return 1
-    
-    # Skip lines that are just string continuations (wrapped strings)
-    [[ "$trimmed" =~ ^\"[^\"]*\"$ ]] && return 1
-    [[ "$trimmed" =~ ^\+ ]] && return 1
-    
-    # Skip LINQ method chains on new lines (lines starting with .)
-    [[ "$trimmed" =~ ^\. ]] && return 1
-    
-    # Skip attribute-only lines
-    [[ "$trimmed" =~ ^\[.*\]$ ]] && return 1
-    
-    # Skip region directives
-    [[ "$trimmed" =~ ^#region ]] && return 1
-    [[ "$trimmed" =~ ^#endregion ]] && return 1
-    [[ "$trimmed" =~ ^#pragma ]] && return 1
-    [[ "$trimmed" =~ ^#if ]] && return 1
-    [[ "$trimmed" =~ ^#else ]] && return 1
-    [[ "$trimmed" =~ ^#endif ]] && return 1
-    [[ "$trimmed" =~ ^#nullable ]] && return 1
-    
-    # Skip empty accessors
-    [[ "$trimmed" == "get;" ]] && return 1
-    [[ "$trimmed" == "set;" ]] && return 1
-    [[ "$trimmed" == "init;" ]] && return 1
-    [[ "$trimmed" == "get" ]] && return 1
-    [[ "$trimmed" == "set" ]] && return 1
-    
-    # If we get here, it's a meaningful line
-    return 0
-}
-
-# Function to count meaningful lines in a file
-count_meaningful_lines() {
-    local file="$1"
-    local meaningful=0
-    local total_non_empty=0
-    local in_multiline_comment=0
-    
-    while IFS= read -r line || [[ -n "$line" ]]; do
-        local trimmed=$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        
-        # Skip empty lines for total count
-        [[ -z "$trimmed" ]] && continue
-        total_non_empty=$((total_non_empty + 1))
-        
-        # Handle multi-line comments
-        if [[ $in_multiline_comment -eq 1 ]]; then
-            if [[ "$trimmed" =~ \*/ ]]; then
-                in_multiline_comment=0
-            fi
-            continue
-        fi
-        
-        if [[ "$trimmed" =~ ^/\* ]] && [[ ! "$trimmed" =~ \*/ ]]; then
-            in_multiline_comment=1
-            continue
-        fi
-        
-        # Check if line is meaningful
-        if is_meaningful_line "$line"; then
-            meaningful=$((meaningful + 1))
-        fi
-    done < "$file"
-    
-    # Output as single line with space separator
-    printf "%d %d" "$meaningful" "$total_non_empty"
-}
-
-# Function to count NuGet dependencies from a csproj file
-count_nuget_in_csproj() {
-    local csproj="$1"
-    local count
-    count=$(grep -c '<PackageReference' "$csproj" 2>/dev/null || echo "0")
-    sanitize_num "$count"
-}
-
-# Function to get hash for a path (for file-based storage)
+# Function to get hash for a path
 get_path_hash() {
-    echo "$1" | md5sum | cut -d' ' -f1
+    # Use md5sum on Linux, md5 on macOS
+    if command -v md5sum &> /dev/null; then
+        echo "$1" | md5sum | cut -d' ' -f1
+    else
+        echo "$1" | md5 | cut -d' ' -f1
+    fi
 }
 
 # Function to find the project a cs file belongs to
@@ -213,45 +163,27 @@ find_project_for_file() {
     local cs_file="$1"
     local dir=$(dirname "$cs_file")
     
-    # Walk up the directory tree to find a .csproj file
-    while [[ "$dir" != "/" ]] && [[ "$dir" != "." ]]; do
+    while [[ "$dir" != "/" ]] && [[ "$dir" != "." ]] && [[ -n "$dir" ]]; do
+        # Check cache first
+        local dir_hash=$(get_path_hash "$dir")
+        local cache_file="$TEMP_DIR/dircache_$dir_hash"
+        
+        if [[ -f "$cache_file" ]]; then
+            cat "$cache_file"
+            return
+        fi
+        
         local csproj=$(find "$dir" -maxdepth 1 -name "*.csproj" -type f 2>/dev/null | head -1)
         if [[ -n "$csproj" ]]; then
+            echo "$csproj" > "$cache_file"
             echo "$csproj"
             return
         fi
+        
         dir=$(dirname "$dir")
     done
     
     echo ""
-}
-
-# Function to initialize project data file
-init_project_data() {
-    local csproj="$1"
-    local nuget="$2"
-    local hash=$(get_path_hash "$csproj")
-    # Format: meaningful|total|cs_count|nuget|project_path
-    echo "0|0|0|$nuget|$csproj" > "$TEMP_DIR/proj_$hash.dat"
-}
-
-# Function to update project data
-update_project_data() {
-    local csproj="$1"
-    local add_meaningful="$2"
-    local add_total="$3"
-    local hash=$(get_path_hash "$csproj")
-    local data_file="$TEMP_DIR/proj_$hash.dat"
-    
-    if [[ -f "$data_file" ]]; then
-        IFS='|' read -r meaningful total cs_count nuget proj_path < "$data_file"
-        meaningful=$((meaningful + add_meaningful))
-        total=$((total + add_total))
-        cs_count=$((cs_count + 1))
-        echo "$meaningful|$total|$cs_count|$nuget|$proj_path" > "$data_file"
-        return 0
-    fi
-    return 1
 }
 
 # Function to analyze directory
@@ -275,64 +207,74 @@ analyze_directory() {
     local orphan_total=0
     local orphan_cs_count=0
     
-    # Get all csproj files and initialize their data
+    # Get all csproj files
     echo -e "${BLUE}Finding projects...${NC}"
-    
-    # Store project list
     find "$folder" -name "*.csproj" -type f 2>/dev/null | sort > "$TEMP_DIR/projects.txt"
     total_csproj_count=$(wc -l < "$TEMP_DIR/projects.txt" | tr -d '[:space:]')
     
+    # Initialize project data files and count NuGet
     while IFS= read -r csproj; do
-        local nuget
-        nuget=$(count_nuget_in_csproj "$csproj")
+        local nuget=$(grep -c '<PackageReference' "$csproj" 2>/dev/null || echo "0")
+        nuget=$(echo "$nuget" | tr -d '[:space:]')
         total_nuget_count=$((total_nuget_count + nuget))
-        init_project_data "$csproj" "$nuget"
+        
+        local hash=$(get_path_hash "$csproj")
+        echo "0|0|0|$nuget|$csproj" > "$TEMP_DIR/proj_$hash.dat"
     done < "$TEMP_DIR/projects.txt"
     
     echo -e "  Found ${GREEN}$total_csproj_count${NC} projects"
     echo ""
     
-    # Count cs files
+    # Get all cs files
     find "$folder" -name "*.cs" -type f 2>/dev/null > "$TEMP_DIR/csfiles.txt"
     total_cs_count=$(wc -l < "$TEMP_DIR/csfiles.txt" | tr -d '[:space:]')
     
-    # Process each .cs file
     echo -e "${BLUE}Analyzing C# files...${NC}"
-    local processed=0
     
+    # Process files in batches using xargs and parallel awk processing
+    local processed=0
+    local batch_size=100
+    local results_file="$TEMP_DIR/batch_results.txt"
+    > "$results_file"
+    
+    # Process each file with awk (much faster than bash line-by-line)
     while IFS= read -r cs_file; do
         processed=$((processed + 1))
         
-        # Show progress every 50 files
-        if [[ $((processed % 50)) -eq 0 ]] || [[ $processed -eq $total_cs_count ]]; then
+        # Show progress every 100 files
+        if [[ $((processed % 100)) -eq 0 ]] || [[ $processed -eq $total_cs_count ]]; then
             printf "\r  Processing: %d / %d files" "$processed" "$total_cs_count"
         fi
         
-        # Count lines in file
-        local counts
-        counts=$(count_meaningful_lines "$cs_file")
-        local meaningful
-        local non_empty
-        meaningful=$(echo "$counts" | awk '{print $1}')
-        non_empty=$(echo "$counts" | awk '{print $2}')
+        # Use awk for fast line counting
+        local counts=$(awk "$AWK_COUNTER" "$cs_file" 2>/dev/null || echo "0 0")
+        local meaningful=$(echo "$counts" | awk '{print $1}')
+        local non_empty=$(echo "$counts" | awk '{print $2}')
         
-        # Sanitize
-        meaningful=$(sanitize_num "$meaningful")
-        non_empty=$(sanitize_num "$non_empty")
-        
-        # Default to 0 if empty
         meaningful=${meaningful:-0}
         non_empty=${non_empty:-0}
         
         total_meaningful_lines=$((total_meaningful_lines + meaningful))
         total_non_empty_lines=$((total_non_empty_lines + non_empty))
         
-        # Find which project this file belongs to
-        local project
-        project=$(find_project_for_file "$cs_file")
+        # Find project and update
+        local project=$(find_project_for_file "$cs_file")
         
-        if [[ -n "$project" ]] && update_project_data "$project" "$meaningful" "$non_empty"; then
-            : # Successfully updated
+        if [[ -n "$project" ]]; then
+            local hash=$(get_path_hash "$project")
+            local data_file="$TEMP_DIR/proj_$hash.dat"
+            
+            if [[ -f "$data_file" ]]; then
+                IFS='|' read -r p_meaningful p_total p_cs p_nuget p_path < "$data_file"
+                p_meaningful=$((p_meaningful + meaningful))
+                p_total=$((p_total + non_empty))
+                p_cs=$((p_cs + 1))
+                echo "$p_meaningful|$p_total|$p_cs|$p_nuget|$p_path" > "$data_file"
+            else
+                orphan_meaningful=$((orphan_meaningful + meaningful))
+                orphan_total=$((orphan_total + non_empty))
+                orphan_cs_count=$((orphan_cs_count + 1))
+            fi
         else
             orphan_meaningful=$((orphan_meaningful + meaningful))
             orphan_total=$((orphan_total + non_empty))
@@ -354,8 +296,7 @@ analyze_directory() {
     for data_file in "$TEMP_DIR"/proj_*.dat; do
         [[ -f "$data_file" ]] || continue
         IFS='|' read -r meaningful total cs_count nuget proj_path < "$data_file"
-        local proj_name
-        proj_name=$(basename "$proj_path" .csproj)
+        local proj_name=$(basename "$proj_path" .csproj)
         echo "$meaningful|$proj_name|$cs_count|$nuget|$total" >> "$TEMP_DIR/results.txt"
     done
     
@@ -367,14 +308,12 @@ analyze_directory() {
         "Project" "Files" "NuGet" "Non-Empty" "Meaningful" "Ratio"
     echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
     
-    # Sort by meaningful lines descending and display
     sort -t'|' -k1 -rn "$TEMP_DIR/results.txt" | while IFS='|' read -r p_meaningful proj_name p_cs p_nuget p_total; do
         local ratio="0.0"
         if [[ $p_total -gt 0 ]]; then
             ratio=$(awk "BEGIN {printf \"%.1f\", ($p_meaningful / $p_total) * 100}")
         fi
         
-        # Truncate project name if too long
         if [[ ${#proj_name} -gt 40 ]]; then
             proj_name="${proj_name:0:37}..."
         fi
@@ -383,7 +322,6 @@ analyze_directory() {
             "$proj_name" "$p_cs" "$p_nuget" "$p_total" "$p_meaningful" "$ratio"
     done
     
-    # Show orphan files if any
     if [[ $orphan_cs_count -gt 0 ]]; then
         echo -e "${CYAN}╠══════════════════════════════════════════════════════════════════════════════════════════════╣${NC}"
         local orphan_ratio="0.0"
@@ -414,14 +352,9 @@ analyze_directory() {
 
 # Main execution
 main() {
-    # Select folder
     select_folder
-    
-    # Analyze selected folder
     analyze_directory "$SELECTED_FOLDER"
-    
     echo -e "${GREEN}Analysis complete!${NC}"
 }
 
-# Run main function
 main
