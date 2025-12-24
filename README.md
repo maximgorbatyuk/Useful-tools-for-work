@@ -6,6 +6,8 @@ This repository contains useful tools for work.
 
 - [Git Cleanup](git-cleanup/readme.md)
 - [.NET Uninstall](dotnet-ununinstall/readme.md)
+- [TP.Tools NuGet Upgrade](tp-nugets-upgrade/readme.md)
+- [Git Cleanup Manager](git-cleanup-manager/readme.md)
 
 ## License
 
