@@ -8,6 +8,7 @@ This repository contains useful tools for work.
 - [.NET Uninstall](dotnet-ununinstall/readme.md)
 - [TP.Tools NuGet Upgrade](tp-nugets-upgrade/readme.md)
 - [Git Cleanup Manager](git-cleanup-manager/readme.md)
+- [.NET Project Analyzer](dotnet-project-analyzer/readme.md)
 
 ## License
 
